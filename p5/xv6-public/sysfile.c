@@ -487,7 +487,7 @@ int sys_macquire(void)
 // especially with the way addresses are passed, etc
 // useful link for later if you're running into problems
 // https://piazza.com/class/lrl9gion4s33ro/post/787
-// i think atleast
+// i think atleast idk if itll help but it seems like it'll spring up
 
 void mrelease(mutex *m)
 {
@@ -506,4 +506,30 @@ int sys_mrelease(void)
     return -1;
   mrelease(m);
   return 0;
+}
+
+int nice(int inc)
+{
+  struct proc *curproc = myproc();
+  // increment nice by inc
+  // lower is more priority
+  curproc->nice += inc;
+
+  // range clamping
+  if (curproc->nice < -20) {
+    curproc->nice = -20;
+  }
+  if (curproc->nice >= 19) {
+    curproc->nice = 19;
+  }
+  // on success, return -1 if it fails
+  return 0;
+}
+
+int sys_nice(void)
+{
+  int inc;
+  if (argint(0, &inc) < 0)
+    return -1;
+  return nice(inc);
 }
