@@ -469,6 +469,17 @@ void macquire(mutex *m)
   }
   m->locked = 1;
   m->pid = myproc()->pid;
+  struct proc *p;
+  struct cpu *c = mycpu();
+  p = c->proc;
+  for (int i = 0; i < 16; i++)
+  {
+    if (p->locks[i] == NULL)
+    {
+      p->locks[i] = &m;
+      break;
+    }
+  }
   release(&m->lk);
 }
 
@@ -494,6 +505,17 @@ void mrelease(mutex *m)
   acquire(&m->lk);
   m->locked = 0;
   m->pid = 0;
+  struct proc *p;
+  struct cpu *c = mycpu();
+  p = c->proc;
+  for (int i = 0; i < 16; i++)
+  {
+    if (p->locks[i] == &m)
+    {
+      p->locks[i] = NULL;
+      break;
+    }
+  }
   wakeup(m);
   release(&m->lk);
 }
@@ -516,10 +538,12 @@ int nice(int inc)
   curproc->nice += inc;
 
   // range clamping
-  if (curproc->nice < -20) {
+  if (curproc->nice < -20)
+  {
     curproc->nice = -20;
   }
-  if (curproc->nice >= 19) {
+  if (curproc->nice >= 19)
+  {
     curproc->nice = 19;
   }
   // on success, return -1 if it fails

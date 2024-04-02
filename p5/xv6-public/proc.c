@@ -408,57 +408,90 @@ int wait(void)
 //       via swtch back to the scheduler.
 void scheduler(void)
 {
-  struct proc *p;
-  struct cpu *c = mycpu();
-  c->proc = 0;
+    struct proc *p;
+    struct cpu *c = mycpu();
+    c->proc = 0;
 
-  for (;;)
-  {
-    // Enable interrupts on this processor.
-    sti();
-
-    // Loop over process table looking for process to run.
-    acquire(&ptable.lock);
-    int highest_priority_nice = 20;
-
-    // find highest priority nice value for all processes
-    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    for (;;)
     {
-      if (p->state != RUNNABLE)
-        continue;
+        // Enable interrupts on this processor.
+        sti();
 
-      if (p->nice < highest_priority_nice)
-      {
-        highest_priority_nice = p->nice;
-      }
+        // Loop over process table looking for process to run.
+        acquire(&ptable.lock);
+        int highest_priority_nice = 20;
+
+        // find highest priority nice value for all processes
+        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+        {
+            if (p->state != RUNNABLE)
+                continue;
+
+            if (p->nice < highest_priority_nice)
+            {
+                highest_priority_nice = p->nice;
+            }
+        }
+
+        // Priority Inheritance
+        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+        {
+            if (p->state != SLEEPING || p->chan == 0)
+                continue;
+
+            // Find the highest priority (lowest nice value) among threads waiting for any of the locks held by the process
+            int elevated_nice = 19; // Initialize with highest possible priority
+            for (int i = 0; i < 16; i++) 
+            {
+                if (p->locks[i] == 0) // Check if the process holds this lock
+                    continue;
+
+                // Iterate over all threads waiting for this lock
+                for (struct proc *q = ptable.proc; q < &ptable.proc[NPROC]; q++)
+                {
+                    if (q->state != RUNNABLE || q->chan != p->locks[i])
+                        continue;
+
+                    if (q->nice < elevated_nice)
+                    {
+                        elevated_nice = q->nice;
+                    }
+                }
+            }
+
+            // Elevate the priority of the lock holder if necessary
+            if (elevated_nice < p->nice)
+            {
+                p->nice = elevated_nice;
+            }
+        }
+
+        // round robin style for processes with highest priority nice value
+        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+        {
+            if (p->state != RUNNABLE)
+                continue;
+
+            if (p->nice == highest_priority_nice)
+            {
+                // Switch to chosen process.  It is the process's job
+                // to release ptable.lock and then reacquire it
+                // before jumping back to us.
+                c->proc = p;
+                switchuvm(p);
+                p->state = RUNNING;
+
+                swtch(&(c->scheduler), p->context);
+                switchkvm();
+
+                // Process is done running for now.
+                // It should have changed its p->state before coming back.
+                c->proc = 0;
+            }
+        }
+
+        release(&ptable.lock);
     }
-
-    // round robin style for processes with highest priority nice value
-    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-    {
-      if (p->state != RUNNABLE)
-        continue;
-
-      if (p->nice == highest_priority_nice)
-      {
-        // Switch to chosen process.  It is the process's job
-        // to release ptable.lock and then reacquire it
-        // before jumping back to us.
-        c->proc = p;
-        switchuvm(p);
-        p->state = RUNNING;
-
-        swtch(&(c->scheduler), p->context);
-        switchkvm();
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-      }
-    }
-
-    release(&ptable.lock);
-  }
 }
 
 // Enter scheduler.  Must hold only ptable.lock
