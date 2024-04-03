@@ -463,20 +463,20 @@ int sys_pipe(void)
 void macquire(mutex *m)
 {
   acquire(&m->lk);
+  int offest = (unsigned long)m & 0xFFF;
   while (m->locked)
   {
-    sleep(m, &m->lk);
+    sleep((void*)((int)(uva2ka(myproc()->pgdir, (char *)m)) + offest), &m->lk);
   }
   m->locked = 1;
   m->pid = myproc()->pid;
-  struct proc *p;
-  struct cpu *c = mycpu();
-  p = c->proc;
+  struct proc *p = myproc();
   for (int i = 0; i < 16; i++)
   {
     if (p->locks[i] == NULL)
     {
-      p->locks[i] = &m;
+      //returns the page of the physical address, need offset from last 12 bits of the VA
+      p->locks[i] = (void*)((int)(uva2ka(myproc()->pgdir, (char *)m)) + offest);
       break;
     }
   }
@@ -503,6 +503,7 @@ int sys_macquire(void)
 void mrelease(mutex *m)
 {
   acquire(&m->lk);
+  int offest = (unsigned long)m & 0xFFF;
   m->locked = 0;
   m->pid = 0;
   struct proc *p;
@@ -510,13 +511,49 @@ void mrelease(mutex *m)
   p = c->proc;
   for (int i = 0; i < 16; i++)
   {
-    if (p->locks[i] == &m)
+    if (p->locks[i] == m)
     {
       p->locks[i] = NULL;
       break;
     }
   }
-  wakeup(m);
+
+  // for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+  // {
+  //   if (p->state != SLEEPING || p->chan == 0)
+  //     continue;
+
+  //   // Find the highest priority (lowest nice value) among threads waiting for any of the locks held by the process
+  //   int elevated_nice = 19; // Initialize with highest possible priority
+  //   for (int i = 0; i < 16; i++)
+  //   {
+  //     if (p->locks[i] == 0) // Check if the process holds this lock
+  //       continue;
+
+  //     // Iterate over all threads waiting for this lock
+  //     for (struct proc *q = ptable.proc; q < &ptable.proc[NPROC]; q++)
+  //     {
+  //       if (q->state != RUNNABLE || q->chan != p->locks[i])
+  //         continue;
+
+  //       if (q->nice < elevated_nice)
+  //       {
+  //         elevated_nice = q->nice;
+  //       }
+  //     }
+  //   }
+
+  //   // Elevate the priority of the lock holder if necessary
+  //   if (elevated_nice < p->original_nice)
+  //   {
+  //     cprintf("release lock %s %d %d\n", p->name, p->nice, elevated_nice);
+  //     p->nice = elevated_nice;
+  //   } else {
+  //     cprintf("release lock revert %s %d %d\n", p->name, p->nice, elevated_nice);
+  //     p->nice = p->original_nice;
+  //   }
+  // }
+  wakeup((void*)((int)(uva2ka(myproc()->pgdir, (char *)m)) + offest));
   release(&m->lk);
 }
 
@@ -536,15 +573,18 @@ int nice(int inc)
   // increment nice by inc
   // lower is more priority
   curproc->nice += inc;
+  curproc->original_nice = curproc->nice;
 
   // range clamping
   if (curproc->nice < -20)
   {
     curproc->nice = -20;
+    curproc->original_nice = curproc->nice;
   }
   if (curproc->nice >= 19)
   {
     curproc->nice = 19;
+    curproc->original_nice = curproc->nice;
   }
   // on success, return -1 if it fails
   return 0;

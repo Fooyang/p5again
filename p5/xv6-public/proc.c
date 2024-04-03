@@ -17,6 +17,7 @@ extern struct uvmdesc uvmrefcount[NPROC];
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
+int curr_index = -1;
 
 static void wakeup1(void *chan);
 
@@ -95,6 +96,10 @@ found:
   p->sleepticks = -1;
   p->chan = 0;
   p->nice = 0;
+  for (int i = 0; i < 16; i++)
+  {
+    p->locks[i] = 0;
+  }
 
   release(&ptable.lock);
 
@@ -408,90 +413,147 @@ int wait(void)
 //       via swtch back to the scheduler.
 void scheduler(void)
 {
-    struct proc *p;
-    struct cpu *c = mycpu();
-    c->proc = 0;
+  struct proc *p;
+  struct cpu *c = mycpu();
+  c->proc = 0;
 
-    for (;;)
+  for (;;)
+  {
+    // Enable interrupts on this processor.
+    sti();
+
+    // Loop over process table looking for process to run.
+    acquire(&ptable.lock);
+    int highest_priority_nice = 20;
+    int curr_index_copy = curr_index;
+    int curr_index_loop;
+    for (int i = 1; i < NPROC + 1; i++)
     {
-        // Enable interrupts on this processor.
-        sti();
-
-        // Loop over process table looking for process to run.
-        acquire(&ptable.lock);
-        int highest_priority_nice = 20;
-
-        // find highest priority nice value for all processes
-        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+      curr_index_loop = (curr_index_copy + i) % NPROC;
+      p = ptable.proc + curr_index_loop;
+      if (p->state == RUNNABLE && p->chan != 0)
+      {
+        for (int j = 0; j < 16; j++)
         {
-            if (p->state != RUNNABLE)
-                continue;
+          if (p->locks[j] == 0) // Check if the process holds this lock
+            continue;
 
-            if (p->nice < highest_priority_nice)
+          // Iterate over all threads waiting for this lock
+          for (struct proc *q = ptable.proc; q < &ptable.proc[NPROC]; q++)
+          {
+            if (q->state != RUNNABLE || q->chan != p->locks[j])
             {
-                highest_priority_nice = p->nice;
+              //cprintf("%p\n", q->chan);
+              continue;
             }
+
+            if (q->nice < highest_priority_nice)
+            {
+              highest_priority_nice = q->nice;
+              curr_index = curr_index_loop;
+            }
+          }
         }
-
-        // Priority Inheritance
-        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-        {
-            if (p->state != SLEEPING || p->chan == 0)
-                continue;
-
-            // Find the highest priority (lowest nice value) among threads waiting for any of the locks held by the process
-            int elevated_nice = 19; // Initialize with highest possible priority
-            for (int i = 0; i < 16; i++) 
-            {
-                if (p->locks[i] == 0) // Check if the process holds this lock
-                    continue;
-
-                // Iterate over all threads waiting for this lock
-                for (struct proc *q = ptable.proc; q < &ptable.proc[NPROC]; q++)
-                {
-                    if (q->state != RUNNABLE || q->chan != p->locks[i])
-                        continue;
-
-                    if (q->nice < elevated_nice)
-                    {
-                        elevated_nice = q->nice;
-                    }
-                }
-            }
-
-            // Elevate the priority of the lock holder if necessary
-            if (elevated_nice < p->nice)
-            {
-                p->nice = elevated_nice;
-            }
-        }
-
-        // round robin style for processes with highest priority nice value
-        for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
-        {
-            if (p->state != RUNNABLE)
-                continue;
-
-            if (p->nice == highest_priority_nice)
-            {
-                // Switch to chosen process.  It is the process's job
-                // to release ptable.lock and then reacquire it
-                // before jumping back to us.
-                c->proc = p;
-                switchuvm(p);
-                p->state = RUNNING;
-
-                swtch(&(c->scheduler), p->context);
-                switchkvm();
-
-                // Process is done running for now.
-                // It should have changed its p->state before coming back.
-                c->proc = 0;
-            }
-        }
-
-        release(&ptable.lock);
+      }
+      if (p->state == RUNNABLE && p->nice < highest_priority_nice)
+      {
+        highest_priority_nice = p->nice;
+        curr_index = curr_index_loop;
+      }
     }
+
+    p = ptable.proc + curr_index;
+    if (p->state == RUNNABLE)
+    {
+      // Switch to chosen process.  It is the process's job
+      // to release ptable.lock and then reacquire it
+      // before jumping back to us.
+      c->proc = p;
+      switchuvm(p);
+      p->state = RUNNING;
+
+      swtch(&(c->scheduler), p->context);
+      switchkvm();
+
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      c->proc = 0;
+    }
+
+    // Priority Inheritance
+    // for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    // {
+    //   if (p->state != SLEEPING || p->chan == 0)
+    //     continue;
+    //   // Find the highest priority (lowest nice value) among threads waiting for any of the locks held by the process
+    //   int elevated_nice = 19; // Initialize with highest possible priority
+    //   for (int i = 0; i < 16; i++)
+    //   {
+    //     if (p->locks[i] == 0) // Check if the process holds this lock
+    //       continue;
+
+    //     // Iterate over all threads waiting for this lock
+    //     for (struct proc *q = ptable.proc; q < &ptable.proc[NPROC]; q++)
+    //     {
+    //       if (q->state != RUNNABLE || q->chan != p->locks[i])
+    //       {
+    //         cprintf("%p\n", q->chan);
+    //         continue;
+    //       }
+
+    //       if (q->nice < elevated_nice)
+    //       {
+    //         elevated_nice = q->nice;
+    //       }
+    //     }
+    //   }
+
+    //   // Elevate the priority of the lock holder if necessary
+    //   if (elevated_nice < p->nice)
+    //   {
+    //     cprintf("scheduler %s %d %d\n", p->name, p->nice, elevated_nice);
+    //     p->nice = elevated_nice;
+    //   }
+    // }
+
+    // find highest priority nice value for all processes
+    // for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    // {
+    //   if (p->state != RUNNABLE)
+    //     continue;
+
+    //   if (p->nice < highest_priority_nice)
+    //   {
+    //     highest_priority_nice = p->nice;
+    //   }
+    // }
+
+    // // round robin style for processes with highest priority nice value
+    // for (p = ptable.proc; p < &ptable.proc[NPROC]; p++)
+    // {
+    //   if (p->state != RUNNABLE)
+    //     continue;
+
+    //   if (p->nice == highest_priority_nice)
+    //   {
+    //     // Switch to chosen process.  It is the process's job
+    //     // to release ptable.lock and then reacquire it
+    //     // before jumping back to us.
+    //     c->proc = p;
+    //     switchuvm(p);
+    //     p->state = RUNNING;
+
+    //     swtch(&(c->scheduler), p->context);
+    //     switchkvm();
+
+    //     // Process is done running for now.
+    //     // It should have changed its p->state before coming back.
+    //     c->proc = 0;
+    //   }
+    // }
+
+    release(&ptable.lock);
+  }
 }
 
 // Enter scheduler.  Must hold only ptable.lock
